@@ -1,0 +1,11 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+work/
+
+# The full image archive is kept locally, not uploaded to GitHub.
+Indian_Sign_Language*.zip
+ISL_Sign_to_Text_Python.zip
+
