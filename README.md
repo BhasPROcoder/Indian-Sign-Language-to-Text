@@ -10,7 +10,8 @@ included model is enough to run the webcam prototype.
 
 ## Setup
 
-1. Extract `ISL_Sign_to_Text_Python.zip` into a folder.
+1. Download this repository from GitHub (**Code → Download ZIP**) and extract it,
+   or use the existing project folder on your computer.
 2. If you want to retrain, put `Indian_Sign_Language_Small.zip` in the
    same folder. The included model already works without the dataset ZIP.
 3. Open that folder in VS Code (or open a terminal in the folder) and install
