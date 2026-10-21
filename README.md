@@ -8,11 +8,11 @@ during training. The included model was trained on all 10,400 images.
 
 ## Setup
 
-1. Extract `ISL_Sign_to_Text_Python.zip` into a folder.
+1. Download this repository from GitHub using **Code → Download ZIP** and
+   extract it, or use the existing project folder on this computer.
 2. If you want to retrain, put `Indian_Sign_Language_Small.zip` in the
    same folder. The included model already works without the dataset ZIP.
-3. Open that folder in VS Code (or open a terminal in the folder) and install
-   the packages:
+3. Open Command Prompt in the project folder and install the packages once:
 
 ```powershell
 python -m pip install -r requirements.txt
