@@ -7,8 +7,10 @@ The training images are read directly from a ZIP whose layout is:
     ...
     Z/imageN.jpg
 
-Training uses grayscale HOG features and a linear Support Vector Machine,
-matching the method proposed in the accompanying presentation.
+Training extracts the coloured hand-skeleton overlay already present in the
+dataset, then uses HOG features and a linear Support Vector Machine. Webcam
+mode draws the same skeleton from detected hand landmarks. This prevents the
+classifier from learning faces, skin tone, clothing, and room backgrounds.
 """
 
 from __future__ import annotations
@@ -26,7 +28,7 @@ from pathlib import Path
 import joblib
 import matplotlib.pyplot as plt
 import numpy as np
-from PIL import Image, UnidentifiedImageError
+from PIL import Image, ImageDraw, UnidentifiedImageError
 from sklearn.metrics import ConfusionMatrixDisplay, accuracy_score, classification_report
 from sklearn.model_selection import train_test_split
 from sklearn.svm import LinearSVC
@@ -44,14 +46,63 @@ VALID_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 EXPECTED_LABELS = set(string.ascii_uppercase)
 DEFAULT_IMAGES_PER_LETTER = 400
 DEFAULT_MIN_SCORE = -0.25
-DEFAULT_MIN_MARGIN = 0.15
+DEFAULT_MIN_MARGIN = 0.20
+
+FINGER_CONNECTIONS = (
+    (1, 2), (2, 3), (3, 4),
+    (5, 6), (6, 7), (7, 8),
+    (9, 10), (10, 11), (11, 12),
+    (13, 14), (14, 15), (15, 16),
+    (17, 18), (18, 19), (19, 20),
+)
 
 
-def image_to_hog(image: Image.Image) -> np.ndarray:
-    """Convert one image to a fixed-size HOG feature vector."""
-    gray = image.convert("L").resize(IMAGE_SIZE, Image.Resampling.LANCZOS)
-    pixels = np.asarray(gray, dtype=np.uint8)
-    return hog(pixels, **HOG_OPTIONS).astype(np.float32)
+def fit_skeleton(mask: np.ndarray) -> np.ndarray:
+    """Crop, scale, and centre a skeleton without stretching its shape."""
+    ys, xs = np.nonzero(mask)
+    if len(xs) < 20:
+        raise ValueError("No usable hand skeleton was found.")
+    cropped = Image.fromarray(
+        (mask[ys.min():ys.max() + 1, xs.min():xs.max() + 1] * 255).astype(np.uint8)
+    )
+    scale = min(
+        (IMAGE_SIZE[0] - 6) / cropped.width,
+        (IMAGE_SIZE[1] - 6) / cropped.height,
+    )
+    fitted_size = (
+        max(1, round(cropped.width * scale)),
+        max(1, round(cropped.height * scale)),
+    )
+    cropped = cropped.resize(fitted_size, Image.Resampling.BILINEAR)
+    canvas = Image.new("L", IMAGE_SIZE)
+    canvas.paste(
+        cropped,
+        ((IMAGE_SIZE[0] - fitted_size[0]) // 2, (IMAGE_SIZE[1] - fitted_size[1]) // 2),
+    )
+    return np.asarray(canvas, dtype=np.uint8)
+
+
+def dataset_skeleton_hog(image: Image.Image) -> np.ndarray:
+    """Extract the coloured landmark overlay from one training image."""
+    rgb = np.asarray(image.convert("RGB"), dtype=np.int16)
+    saturation = rgb.max(axis=2) - rgb.min(axis=2)
+    brightness = rgb.max(axis=2)
+    mask = (saturation > 35) & (brightness > 90)
+    return hog(fit_skeleton(mask), **HOG_OPTIONS).astype(np.float32)
+
+
+def live_skeleton_hog(hand_landmarks, frame_size: tuple[int, int]) -> np.ndarray:
+    """Draw detected landmarks in the same form as the dataset overlays."""
+    width, height = frame_size
+    canvas = Image.new("L", (width, height))
+    draw = ImageDraw.Draw(canvas)
+    for hand in hand_landmarks[:2]:
+        points = [(round(point.x * width), round(point.y * height)) for point in hand]
+        for start, end in FINGER_CONNECTIONS:
+            draw.line((points[start], points[end]), fill=255, width=2)
+        for x, y in points:
+            draw.ellipse((x - 4, y - 4, x + 4, y + 4), fill=255)
+    return hog(fit_skeleton(np.asarray(canvas) > 0), **HOG_OPTIONS).astype(np.float32)
 
 
 def label_from_zip_path(name: str) -> str | None:
@@ -89,7 +140,7 @@ def load_features(zip_path: Path, limit_per_class: int | None = None):
             try:
                 with archive.open(entry) as raw_file:
                     with Image.open(io.BytesIO(raw_file.read())) as image:
-                        features.append(image_to_hog(image))
+                        features.append(dataset_skeleton_hog(image))
                 labels.append(label)
                 counts[label] += 1
             except (OSError, UnidentifiedImageError, ValueError) as error:
@@ -177,10 +228,11 @@ def train(args: argparse.Namespace) -> None:
     print(report)
 
     labels_in_model = model.classes_.tolist()
-    model_path = output_dir / "isl_hog_svm.joblib"
+    model_path = output_dir / "isl_skeleton_svm.joblib"
     joblib.dump(
         {
             "model": model,
+            "feature_type": "colored_skeleton_hog_v1",
             "image_size": IMAGE_SIZE,
             "hog_options": HOG_OPTIONS,
             "labels": labels_in_model,
@@ -221,9 +273,39 @@ def train(args: argparse.Namespace) -> None:
 
 
 def predict(args: argparse.Namespace) -> None:
+    try:
+        import mediapipe as mp
+    except ImportError as error:
+        raise SystemExit(
+            "Image prediction needs MediaPipe. "
+            "Run: python -m pip install -r requirements.txt"
+        ) from error
+
     bundle = joblib.load(args.model)
+    if bundle.get("feature_type") != "colored_skeleton_hog_v1":
+        raise SystemExit(
+            "This is an older background-sensitive model. Use "
+            "results\\isl_skeleton_svm.joblib instead."
+        )
     with Image.open(args.image) as image:
-        feature = image_to_hog(image).reshape(1, -1)
+        rgb = np.asarray(image.convert("RGB"), dtype=np.uint8)
+    options = mp.tasks.vision.HandLandmarkerOptions(
+        base_options=mp.tasks.BaseOptions(model_asset_path=str(args.hand_model)),
+        running_mode=mp.tasks.vision.RunningMode.IMAGE,
+        num_hands=2,
+        min_hand_detection_confidence=0.35,
+        min_hand_presence_confidence=0.35,
+        min_tracking_confidence=0.35,
+    )
+    with mp.tasks.vision.HandLandmarker.create_from_options(options) as detector:
+        result = detector.detect(
+            mp.Image(image_format=mp.ImageFormat.SRGB, data=np.ascontiguousarray(rgb))
+        )
+    if not result.hand_landmarks:
+        raise SystemExit("No hand was detected in the image.")
+    feature = live_skeleton_hog(
+        result.hand_landmarks, (rgb.shape[1], rgb.shape[0])
+    ).reshape(1, -1)
     prediction = bundle["model"].predict(feature)[0]
     print(f"Predicted letter: {prediction}")
 
@@ -280,6 +362,11 @@ def webcam(args: argparse.Namespace) -> None:
         raise ValueError("--scan-every and --votes must both be at least 1.")
 
     bundle = joblib.load(args.model)
+    if bundle.get("feature_type") != "colored_skeleton_hog_v1":
+        raise SystemExit(
+            "This is an older background-sensitive model. Use "
+            "results\\isl_skeleton_svm.joblib instead."
+        )
     model = bundle["model"]
     detector_options = mp.tasks.vision.HandLandmarkerOptions(
         base_options=mp.tasks.BaseOptions(model_asset_path=str(args.hand_model)),
@@ -328,9 +415,12 @@ def webcam(args: argparse.Namespace) -> None:
                     else:
                         region = hand_region(frame.shape, hands.hand_landmarks)
                         left, top, right, bottom = region
-                        crop = rgb[top:bottom, left:right]
-                        # The same HOG conversion is used for training and camera input.
-                        feature = image_to_hog(Image.fromarray(crop)).reshape(1, -1)
+                        # Classify only the normalized hand skeleton. The room,
+                        # face, clothing, and hand position are intentionally ignored.
+                        feature = live_skeleton_hog(
+                            hands.hand_landmarks,
+                            (frame.shape[1], frame.shape[0]),
+                        ).reshape(1, -1)
                         scores = model.decision_function(feature)[0]
                         best = int(np.argmax(scores))
                         runner_up = float(np.partition(scores, -2)[-2])
@@ -384,7 +474,7 @@ def webcam(args: argparse.Namespace) -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Indian Sign Language A-Z recognition with HOG and a linear SVM."
+        description="Indian Sign Language A-Z recognition using hand skeletons."
     )
     commands = parser.add_subparsers(dest="command", required=True)
 
@@ -409,6 +499,11 @@ def build_parser() -> argparse.ArgumentParser:
     predict_parser = commands.add_parser("predict", help="Predict one image.")
     predict_parser.add_argument("--model", type=Path, required=True)
     predict_parser.add_argument("--image", type=Path, required=True)
+    predict_parser.add_argument(
+        "--hand-model", type=Path,
+        default=Path(__file__).resolve().parent / "models" / "hand_landmarker.task",
+        help="Path to the included hand detector model.",
+    )
     predict_parser.set_defaults(function=predict)
 
     webcam_parser = commands.add_parser("webcam", help="Recognise signs from a live camera.")
@@ -425,7 +520,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     webcam_parser.add_argument(
         "--min-margin", type=float, default=DEFAULT_MIN_MARGIN,
-        help="Minimum lead over the second-best letter (default: 0.15).",
+        help="Minimum lead over the second-best letter (default: 0.20).",
     )
     webcam_parser.add_argument(
         "--scan-every", type=int, default=2,
@@ -441,7 +536,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main() -> None:
     if len(sys.argv) == 1:
-        model_path = Path(__file__).resolve().parent / "results" / "isl_hog_svm.joblib"
+        model_path = Path(__file__).resolve().parent / "results" / "isl_skeleton_svm.joblib"
         args = build_parser().parse_args(["webcam", "--model", str(model_path)])
     else:
         args = build_parser().parse_args()

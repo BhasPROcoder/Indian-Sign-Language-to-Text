@@ -1,17 +1,14 @@
 # Indian Sign Language A-Z prototype
 
-This Python prototype recognises one alphabet sign at a time. It uses grayscale
-HOG features and a linear SVM, as proposed in the presentation. The full
+This Python prototype recognises one alphabet sign at a time. It uses a
+normalised hand-skeleton representation, HOG features, and a linear SVM. The full
 dataset ZIP has **10,400 images: 400 for each letter A-Z**. The script reads the
 ZIP directly, without extracting it, and uses at most 400 images per letter
 during training. The included model was trained on all 10,400 images.
-The large dataset ZIP is kept locally and is not uploaded to GitHub; the
-included model is enough to run the webcam prototype.
 
 ## Setup
 
-1. Download this repository from GitHub (**Code → Download ZIP**) and extract it,
-   or use the existing project folder on your computer.
+1. Extract `ISL_Sign_to_Text_Python.zip` into a folder.
 2. If you want to retrain, put `Indian_Sign_Language_Small.zip` in the
    same folder. The included model already works without the dataset ZIP.
 3. Open that folder in VS Code (or open a terminal in the folder) and install
@@ -33,7 +30,9 @@ python sign_to_text.py
 
 Place the complete hand sign anywhere in the camera frame, with both hands when
 needed. The detector checks the whole frame and a smaller box follows the
-detected hands for letter recognition. The program makes a prediction every
+detected hands. Only the detected finger skeleton is used for recognition, so
+moving sideways, changing the room background, or having your face in view
+should not affect the letter classifier. The program makes a prediction every
 second frame and votes across three recent predictions. When it sees no hand it
 shows **No hand**; for a weak letter match it shows **Uncertain** and no letter.
 Press **Space** to add the displayed letter,
@@ -43,11 +42,10 @@ If camera 0 is unavailable, add `--camera 1`.
 The hand detector is included in `models/hand_landmarker.task`. Keep that folder
 beside `sign_to_text.py`. A letter is displayed only when a hand is found, the
 best model score is at least -0.25, and it leads the next letter by at least
-0.15. If a real sign repeatedly shows **Uncertain**, try `--min-score -0.4`.
+0.20. If a real sign repeatedly shows **Uncertain**, try `--min-score -0.4`.
 If wrong letters appear, increase `--min-score` or `--min-margin` instead.
-The training images have coloured landmark lines that do not appear
-in the webcam, so live predictions can be less reliable than the dataset
-evaluation. This is a classroom prototype.
+Live predictions can still be less reliable than the dataset evaluation because
+this is a classroom prototype and several alphabet poses are visually similar.
 
 ## Retrain on the full ZIP (optional)
 
@@ -62,7 +60,7 @@ This creates a model and an evaluation report in `results`. The default cap is
 To predict a saved image instead of opening the webcam:
 
 ```powershell
-python sign_to_text.py predict --model results\isl_hog_svm.joblib --image "C:\path\to\sign.jpg"
+python sign_to_text.py predict --model results\isl_skeleton_svm.joblib --image "C:\path\to\sign.jpg"
 ```
 
 ## Simple improvements without enlarging the dataset
@@ -73,8 +71,8 @@ python sign_to_text.py predict --model results\isl_hog_svm.joblib --image "C:\pa
   for more frequent predictions or 3 for lower CPU use.
 - Use the `results/confusion_matrix.png` file to see which letters the model
   confuses. For a more honest evaluation, test on a different signer or session.
-- Keep your face and other people out of the camera frame when possible so the
-  letter classifier focuses on the sign.
+- Avoid overlapping your face and hands. A visible face elsewhere in the frame
+  is fine because it is excluded from the classifier.
 
 The dataset source identified in the presentation is Preksha Palva's Indian
 Sign Language dataset on Kaggle. Keep this attribution if you share the work.
